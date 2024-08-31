@@ -119,5 +119,95 @@ def create_and_update_rdf_graph(df, conn, edges):
     print("Batch processed and data added to AllegroGraph.")
 ```
 
+## 5. Definición y uso del modelo Machine Learning (traffic_prediction_gnn.py)
 
-## TODO: Parte de machine learning, en proceso
+### Descripción
+Extraemos los datos necesarios del grafo de AllegroGraph y creamos un modelo que combina:
+- LSTM (Long Short-Term Memory): captura patrones temporales en los datos
+- GCNConv: se centra en las relaciones espaciales de los sensores.
+
+Entrenamos y ajustamos el modelo y posteriormente se crea un CSV con las predicciones:
+- Futuro valor del tráfico en cada sensor teniendo en cuenta su historial de valores
+
+### Código Relevante
+
+```python
+
+# Función para extraer datos de sensores y lecturas de tráfico desde AllegroGraph
+def extract_sensor_data_from_allegrograph():
+    query = """
+    SELECT DISTINCT ?sensor ?longitude ?latitude ?trafficFlow ?windowStart
+    WHERE {
+        ?sensor a <http://www.example.com/traffic#Sensor> ;
+                <http://www.example.com/traffic#longitude> ?longitude ;
+                <http://www.example.com/traffic#latitude> ?latitude .
+
+        ?entry a <http://www.example.com/traffic#TrafficEntry> ;
+                <http://www.example.com/traffic#belongsTo> ?sensor ;
+                <http://www.example.com/traffic#trafficFlow> ?trafficFlow ;
+                <http://www.example.com/traffic#windowStart> ?windowStart .
+    }
+    ORDER BY ?sensor ?windowStart
+    """
+    
+# Función para extraer la estructura del grafo de conexiones entre sensores desde AllegroGraph
+def extract_graph_structure_from_allegrograph():
+    query = """
+    SELECT DISTINCT ?source ?target
+    WHERE {
+        ?connection a <http://www.example.com/traffic#Connection> ;
+                    <http://www.example.com/traffic#source> ?source ;
+                    <http://www.example.com/traffic#target> ?target .
+    }
+    """
+
+
+# Definición del modelo GNN + LSTM
+class TrafficPredictionGNN(torch.nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim):
+        super(TrafficPredictionGNN, self).__init__()
+        self.lstm = torch.nn.LSTM(input_dim, hidden_dim, batch_first=True)
+        self.conv1 = GCNConv(hidden_dim, hidden_dim)
+        self.conv2 = GCNConv(hidden_dim, output_dim)
+
+    def forward(self, data):
+        x, _ = self.lstm(data.x)
+        if x.dim() == 3:
+            x = x[:, -1, :]  # Tomar la última salida de LSTM para cada secuencia
+        else:
+            x = x  # En caso de que x ya sea 2D, no hacer slicing
+
+        x = F.relu(self.conv1(x, data.edge_index))
+        x = self.conv2(x, data.edge_index)
+        return x
+
+# Ejecución principal
+def main():
+    # Extraer datos de sensores y sus lecturas de tráfico
+    sensor_data = extract_sensor_data_from_allegrograph()
+
+    # Extraer la estructura del grafo de conexiones entre sensores
+    graph_edges = extract_graph_structure_from_allegrograph()
+
+    # Preparar los datos para el modelo
+    data = prepare_data(sensor_data, graph_edges)
+
+    # Definir el modelo
+    input_dim = 1  # Ya que estamos usando una dimensión para el LSTM
+    hidden_dim = 64
+    output_dim = 1  # Predicción de tráfico es un único valor
+    model = TrafficPredictionGNN(input_dim, hidden_dim, output_dim)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+
+    # Entrenar el modelo
+    train_model(data, model, optimizer)
+
+    # Realizar predicciones
+    model.eval()
+    with torch.no_grad():
+        predictions = model(data).squeeze()
+        print(f"Shape de las predicciones: {predictions.shape}")
+
+    # Guardar las predicciones en un CSV
+    save_predictions_to_csv(sensor_data, predictions, data.means, data.stds, data.sensor_to_index)
+```
