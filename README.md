@@ -162,11 +162,10 @@ def extract_graph_structure_from_allegrograph():
     """
 
 
-# Definición del modelo GNN + LSTM
 class TrafficPredictionGNN(torch.nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim):
         super(TrafficPredictionGNN, self).__init__()
-        self.lstm = torch.nn.LSTM(input_dim, hidden_dim, batch_first=True)
+        self.lstm = torch.nn.LSTM(input_dim, hidden_dim, batch_first=True, num_layers=2, dropout=0.2)  # Añadir Dropout y más capas
         self.conv1 = GCNConv(hidden_dim, hidden_dim)
         self.conv2 = GCNConv(hidden_dim, output_dim)
 
@@ -181,33 +180,33 @@ class TrafficPredictionGNN(torch.nn.Module):
         x = self.conv2(x, data.edge_index)
         return x
 
-# Ejecución principal
+    
+# Función principal
 def main():
-    # Extraer datos de sensores y sus lecturas de tráfico
+    # Extraer datos y estructura del grafo
     sensor_data = extract_sensor_data_from_allegrograph()
-
-    # Extraer la estructura del grafo de conexiones entre sensores
     graph_edges = extract_graph_structure_from_allegrograph()
 
-    # Preparar los datos para el modelo
+    # Preparar datos
     data = prepare_data(sensor_data, graph_edges)
 
-    # Definir el modelo
-    input_dim = 1  # Ya que estamos usando una dimensión para el LSTM
-    hidden_dim = 64
-    output_dim = 1  # Predicción de tráfico es un único valor
+    # Definir el modelo y el optimizador con nuevos hiperparámetros
+    input_dim = 1
+    hidden_dim = 16
+    output_dim = 1
     model = TrafficPredictionGNN(input_dim, hidden_dim, output_dim)
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+
+    # Ajustar la tasa de aprendizaje
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
 
     # Entrenar el modelo
-    train_model(data, model, optimizer)
+    train_model(data, model, optimizer, epochs=75)
 
-    # Realizar predicciones
+    # Evaluar el modelo
     model.eval()
-    with torch.no_grad():
-        predictions = model(data).squeeze()
-        print(f"Shape de las predicciones: {predictions.shape}")
+    predictions = model(data)
+    mse, mae = evaluate_model(sensor_data, predictions, data.means, data.stds, data.sensor_to_index)
 
-    # Guardar las predicciones en un CSV
+    # Guardar predicciones
     save_predictions_to_csv(sensor_data, predictions, data.means, data.stds, data.sensor_to_index)
 ```
