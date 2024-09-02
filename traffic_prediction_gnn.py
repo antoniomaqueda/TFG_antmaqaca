@@ -1,5 +1,4 @@
 from collections import defaultdict
-
 import pandas as pd
 from franz.openrdf.connect import ag_connect
 from franz.openrdf.query.query import QueryLanguage
@@ -10,7 +9,7 @@ import torch
 import torch.nn.functional as F
 from torch_geometric.data import Data
 from torch_geometric.nn import GCNConv
-
+import matplotlib.pyplot as plt
 
 # Función para extraer datos de sensores y lecturas de tráfico desde AllegroGraph
 def extract_sensor_data_from_allegrograph():
@@ -60,7 +59,6 @@ def extract_sensor_data_from_allegrograph():
 
     return df
 
-
 # Función para extraer la estructura del grafo de conexiones entre sensores desde AllegroGraph
 def extract_graph_structure_from_allegrograph():
     query = """
@@ -94,7 +92,6 @@ def extract_graph_structure_from_allegrograph():
     print(f"Total de conexiones: {len(edges)}")
 
     return edges
-
 
 # Preparar datos para el modelo
 def prepare_data(sensor_data, graph_edges):
@@ -154,12 +151,11 @@ def prepare_data(sensor_data, graph_edges):
     data.real_sequences = real_sequences
     return data
 
-
 # Definición del modelo GNN + LSTM
 class TrafficPredictionGNN(torch.nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim):
         super(TrafficPredictionGNN, self).__init__()
-        self.lstm = torch.nn.LSTM(input_dim, hidden_dim, batch_first=True)
+        self.lstm = torch.nn.LSTM(input_dim, hidden_dim, batch_first=True, num_layers=2, dropout=0.2)  # Añadir Dropout y más capas
         self.conv1 = GCNConv(hidden_dim, hidden_dim)
         self.conv2 = GCNConv(hidden_dim, output_dim)
 
@@ -174,10 +170,10 @@ class TrafficPredictionGNN(torch.nn.Module):
         x = self.conv2(x, data.edge_index)
         return x
 
-
 # Función de entrenamiento
 def train_model(data, model, optimizer, epochs=100):
     model.train()
+    losses = []  # Para almacenar los valores de la pérdida
     for epoch in range(epochs):
         optimizer.zero_grad()
         out = model(data)
@@ -185,63 +181,92 @@ def train_model(data, model, optimizer, epochs=100):
         loss = F.mse_loss(out, data.x[:, -1, 0])  # Comparar solo con el último valor de la secuencia
         loss.backward()
         optimizer.step()
+
+        losses.append(loss.item())  # Guardar el valor de la pérdida
         print(f"Epoch {epoch + 1}/{epochs}, Loss: {loss.item()}")
 
-        # Imprimir algunas secuencias reales y predicciones cada 10 épocas
-        if (epoch + 1) % 10 == 0:
-            print("Ejemplos de secuencias reales y predicciones:")
-            for i in range(min(3, len(data.real_sequences))):  # Imprimir hasta 3 ejemplos
-                print(f"Sensor {i}:")
-                print("Secuencia real:", data.real_sequences[i])
-                print("Secuencia normalizada:", data.x[i].numpy().flatten())
-                print("Predicción:", out[i].detach().numpy())
+    # Graficar la pérdida a lo largo de las épocas
+    plt.figure(figsize=(10, 5))
+    plt.plot(range(1, epochs + 1), losses, label='Loss')
+    plt.xlabel('Épocas')
+    plt.ylabel('Pérdida')
+    plt.title('Pérdida durante el Entrenamiento')
+    plt.legend()
+    plt.show()
 
+# Función para desnormalizar las predicciones
+def denormalize_predictions(predictions, means, stds, sensor_to_index):
+    # Convertir las predicciones a numpy usando detach()
+    predictions = predictions.detach().numpy()
 
+    denormalized_predictions = np.array([
+        pred * stds[sensor_to_index[sensor]] + means[sensor_to_index[sensor]]
+        for sensor, pred in zip(sensor_to_index.keys(), predictions)
+    ])
+    return denormalized_predictions
+
+# Función de evaluación del modelo
+def evaluate_model(sensor_data, predictions, means, stds, sensor_to_index):
+    # Desnormalizar las predicciones
+    denormalized_predictions = denormalize_predictions(predictions, means, stds, sensor_to_index)
+
+    # Obtener valores reales para la evaluación
+    real_values = np.array([
+        sensor_data[sensor_data['sensor'] == sensor]['trafficFlow'].values[-1]
+        for sensor in sensor_to_index.keys()
+    ])
+
+    # Calcular MSE y MAE
+    mse = np.mean((denormalized_predictions - real_values) ** 2)
+    mae = np.mean(np.abs(denormalized_predictions - real_values))
+
+    print(f"Error cuadrático medio (MSE): {mse}")
+    print(f"Error absoluto medio (MAE): {mae}")
+
+    return mse, mae
+
+# Función para guardar las predicciones en un CSV
 def save_predictions_to_csv(sensor_data, predictions, means, stds, sensor_to_index):
-    sensor_to_prediction = {sensor: pred.item() for sensor, pred in zip(sensor_data['sensor'].unique(), predictions)}
-    last_timestamp_data = sensor_data.drop_duplicates(subset=['sensor'], keep='last')
+    denormalized_predictions = denormalize_predictions(predictions, means, stds, sensor_to_index)
 
-    # Desnormalización
-    last_timestamp_data['predicted_trafficFlow'] = last_timestamp_data.apply(
-        lambda row: (sensor_to_prediction[row['sensor']] * stds[sensor_to_index[row['sensor']]]) + means[
-            sensor_to_index[row['sensor']]],
-        axis=1
-    )
+    # Crear un DataFrame con las predicciones
+    df_predictions = pd.DataFrame({
+        'Sensor': list(sensor_to_index.keys()),
+        'PredictedTrafficFlow': denormalized_predictions.flatten()  # Asegúrate de que sea unidimensional
+    })
 
-    last_timestamp_data.to_csv('predicciones_traffic.csv', index=False)
-    print("Predicciones guardadas en 'predicciones_traffic.csv'")
+    # Guardar el DataFrame en un archivo CSV
+    df_predictions.to_csv('predictions.csv', index=False)
+    print("Predicciones guardadas en 'predictions.csv'.")
 
-
-# Ejecución principal
+# Función principal
 def main():
-    # Extraer datos de sensores y sus lecturas de tráfico
+    # Extraer datos y estructura del grafo
     sensor_data = extract_sensor_data_from_allegrograph()
-
-    # Extraer la estructura del grafo de conexiones entre sensores
     graph_edges = extract_graph_structure_from_allegrograph()
 
-    # Preparar los datos para el modelo
+    # Preparar datos
     data = prepare_data(sensor_data, graph_edges)
 
-    # Definir el modelo
-    input_dim = 1  # Ya que estamos usando una dimensión para el LSTM
-    hidden_dim = 64
-    output_dim = 1  # Predicción de tráfico es un único valor
+    # Definir el modelo y el optimizador con nuevos hiperparámetros
+    input_dim = 1
+    hidden_dim = 16
+    output_dim = 1
     model = TrafficPredictionGNN(input_dim, hidden_dim, output_dim)
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+
+    # Ajustar la tasa de aprendizaje
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
 
     # Entrenar el modelo
-    train_model(data, model, optimizer)
+    train_model(data, model, optimizer, epochs=75)
 
-    # Realizar predicciones
+    # Evaluar el modelo
     model.eval()
-    with torch.no_grad():
-        predictions = model(data).squeeze()
-        print(f"Shape de las predicciones: {predictions.shape}")
+    predictions = model(data)
+    mse, mae = evaluate_model(sensor_data, predictions, data.means, data.stds, data.sensor_to_index)
 
-    # Guardar las predicciones en un CSV
+    # Guardar predicciones
     save_predictions_to_csv(sensor_data, predictions, data.means, data.stds, data.sensor_to_index)
-
 
 if __name__ == "__main__":
     main()
