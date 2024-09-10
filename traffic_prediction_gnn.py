@@ -294,8 +294,8 @@ def save_predictions_to_csv(sensor_data, predictions, means, stds, sensor_to_ind
     print(f"Predicciones guardadas en '{filename}'.")
 
 
-# FEEDBACK: Función para graficar resultados reales vs predichos
-def plot_real_vs_predicted(sensor_data, predictions, means, stds, sensor_to_index, mask):
+# Función para graficar resultados reales vs predichos utilizando dispersión
+def plot_real_vs_predicted_scatter(sensor_data, predictions, means, stds, sensor_to_index, mask):
     denormalized_predictions = denormalize_predictions(predictions[mask], means, stds, sensor_to_index)
     sensors = np.array(list(sensor_to_index.keys()))[mask]
     real_values = np.array([
@@ -304,17 +304,19 @@ def plot_real_vs_predicted(sensor_data, predictions, means, stds, sensor_to_inde
     ])
 
     plt.figure(figsize=(15, 7))
-    plt.plot(sensors, real_values, label='Reales', marker='o')
-    plt.plot(sensors, denormalized_predictions, label='Predichas', marker='x')
+    # Gráfico de dispersión para valores reales
+    plt.scatter(sensors, real_values, label='Reales', color='blue', marker='o')
+    # Gráfico de dispersión para valores predichos
+    plt.scatter(sensors, denormalized_predictions, label='Predichas', color='orange', marker='x')
     plt.xlabel('Sensor')
     plt.ylabel('Flujo de Tráfico')
-    plt.title('Comparación de Flujo de Tráfico Real vs Predicho')
+    plt.title('Comparación de Flujo de Tráfico Real vs Predicho (Dispersión)')
     plt.xticks(rotation=90)
     plt.legend()
     plt.tight_layout()
     plt.show()
 
-
+# Reemplaza la función anterior por esta al final del script principal
 def main():
     # Extraer datos y estructura del grafo
     sensor_data = extract_sensor_data_from_allegrograph()
@@ -357,9 +359,10 @@ def main():
     save_predictions_to_csv(sensor_data, predictions, data.means, data.stds, data.sensor_to_index, data.test_mask,
                             filename='predictions_test.csv')
 
-    # Graficar resultados reales vs predichos para el conjunto de prueba
-    plot_real_vs_predicted(sensor_data, predictions, data.means, data.stds, data.sensor_to_index, data.test_mask)
+    # Graficar resultados reales vs predichos (gráfico de dispersión) para el conjunto de prueba
+    plot_real_vs_predicted_scatter(sensor_data, predictions, data.means, data.stds, data.sensor_to_index, data.test_mask)
 
 
 if __name__ == "__main__":
     main()
+
