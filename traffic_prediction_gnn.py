@@ -7,9 +7,11 @@ from tqdm import tqdm
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch_geometric.data import Data
+from torch_geometric.data import Data, DataLoader
 from torch_geometric.nn import GCNConv
 import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+
 
 # Función para extraer datos de sensores y lecturas de tráfico desde AllegroGraph
 def extract_sensor_data_from_allegrograph():
@@ -59,6 +61,7 @@ def extract_sensor_data_from_allegrograph():
 
     return df
 
+
 # Función para extraer la estructura del grafo de conexiones entre sensores desde AllegroGraph
 def extract_graph_structure_from_allegrograph():
     query = """
@@ -93,10 +96,12 @@ def extract_graph_structure_from_allegrograph():
 
     return edges
 
+
 # Preparar datos para el modelo
-def prepare_data(sensor_data, graph_edges):
+def prepare_data(sensor_data, graph_edges, val_split=0.1):
     sensors = sensor_data['sensor'].unique()
     sensor_to_index = {sensor: idx for idx, sensor in enumerate(sensors)}
+    index_to_sensor = {idx: sensor for sensor, idx in sensor_to_index.items()}
 
     features = []
     sequence_lengths = []
@@ -107,7 +112,7 @@ def prepare_data(sensor_data, graph_edges):
     real_sequences = []
 
     for sensor in sensors:
-        sensor_history = sensor_data[sensor_data['sensor'] == sensor]
+        sensor_history = sensor_data[sensor_data['sensor'] == sensor].sort_values('windowStart')
         sensor_flow = sensor_history['trafficFlow'].values
 
         # Calcular media y desviación estándar
@@ -139,25 +144,54 @@ def prepare_data(sensor_data, graph_edges):
     numeric_edges = []
     for edge in graph_edges:
         source, target = edge
-        numeric_edges.append([sensor_to_index[source], sensor_to_index[target]])
+        if source in sensor_to_index and target in sensor_to_index:
+            numeric_edges.append([sensor_to_index[source], sensor_to_index[target]])
 
     edge_index = torch.tensor(numeric_edges, dtype=torch.long).T
 
     data = Data(x=x, edge_index=edge_index)
     data.sequence_lengths = sequence_lengths
     data.sensor_to_index = sensor_to_index
+    data.index_to_sensor = index_to_sensor
     data.means = means
     data.stds = stds
     data.real_sequences = real_sequences
+
+    # FEEDBACK: Dividir los sensores en conjuntos de entrenamiento y prueba
+    train_sensors, test_sensors = train_test_split(sensors, test_size=0.2, random_state=42)
+    train_sensors, val_sensors = train_test_split(train_sensors, test_size=val_split, random_state=42)
+
+    # Crear máscaras para entrenamiento, validación y prueba
+    train_mask = torch.zeros(len(sensors), dtype=torch.bool)
+    val_mask = torch.zeros(len(sensors), dtype=torch.bool)
+    test_mask = torch.zeros(len(sensors), dtype=torch.bool)
+
+    for sensor in train_sensors:
+        train_mask[sensor_to_index[sensor]] = True
+    for sensor in val_sensors:
+        val_mask[sensor_to_index[sensor]] = True
+    for sensor in test_sensors:
+        test_mask[sensor_to_index[sensor]] = True
+
+    data.train_mask = train_mask
+    data.val_mask = val_mask
+    data.test_mask = test_mask
+
     return data
+
 
 # Definición del modelo GNN + LSTM
 class TrafficPredictionGNN(torch.nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim):
+    def __init__(self, input_dim, hidden_dim, output_dim, num_gcn_layers=3):
         super(TrafficPredictionGNN, self).__init__()
-        self.lstm = torch.nn.LSTM(input_dim, hidden_dim, batch_first=True, num_layers=2, dropout=0.2)  # Añadir Dropout y más capas
-        self.conv1 = GCNConv(hidden_dim, hidden_dim)
-        self.conv2 = GCNConv(hidden_dim, output_dim)
+        self.lstm = torch.nn.LSTM(input_dim, hidden_dim, batch_first=True, num_layers=2, dropout=0.3)
+
+        # FEEDBACK: capas GCNConv secuenciales
+        self.gcn_layers = torch.nn.ModuleList()
+        self.gcn_layers.append(GCNConv(hidden_dim, hidden_dim))
+        for _ in range(num_gcn_layers - 2):
+            self.gcn_layers.append(GCNConv(hidden_dim, hidden_dim))
+        self.gcn_layers.append(GCNConv(hidden_dim, output_dim))
 
     def forward(self, data):
         x, _ = self.lstm(data.x)
@@ -166,33 +200,51 @@ class TrafficPredictionGNN(torch.nn.Module):
         else:
             x = x  # En caso de que x ya sea 2D, no hacer slicing
 
-        x = F.relu(self.conv1(x, data.edge_index))
-        x = self.conv2(x, data.edge_index)
+        for conv in self.gcn_layers[:-1]:
+            x = F.relu(conv(x, data.edge_index))
+        x = self.gcn_layers[-1](x, data.edge_index)
         return x
 
-# Función de entrenamiento
-def train_model(data, model, optimizer, epochs=100):
+
+# Función de entrenamiento con validación
+# Modificación de la función de entrenamiento
+def train_model(data, val_data, model, optimizer, scheduler, epochs=75):
     model.train()
-    losses = []  # Para almacenar los valores de la pérdida
+    losses = []
+    val_losses = []
+
     for epoch in range(epochs):
         optimizer.zero_grad()
         out = model(data)
-        # Ajustar el cálculo de la pérdida
-        loss = F.mse_loss(out, data.x[:, -1, 0])  # Comparar solo con el último valor de la secuencia
+        loss = F.mse_loss(out, data.x[:, -1, 0])
         loss.backward()
         optimizer.step()
 
-        losses.append(loss.item())  # Guardar el valor de la pérdida
-        print(f"Epoch {epoch + 1}/{epochs}, Loss: {loss.item()}")
+        # Actualizar el scheduler
+        scheduler.step()
 
-    # Graficar la pérdida a lo largo de las épocas
+        # Evaluación en el conjunto de validación
+        model.eval()
+        with torch.no_grad():
+            val_out = model(val_data)
+            val_loss = F.mse_loss(val_out, val_data.x[:, -1, 0])
+        model.train()
+
+        losses.append(loss.item())
+        val_losses.append(val_loss.item())
+
+        print(f"Epoch {epoch + 1}/{epochs}, Training Loss: {loss.item()}, Validation Loss: {val_loss.item()}")
+
+    # Graficar las pérdidas de entrenamiento y validación
     plt.figure(figsize=(10, 5))
-    plt.plot(range(1, epochs + 1), losses, label='Loss')
+    plt.plot(range(1, epochs + 1), losses, label='Train Loss')
+    plt.plot(range(1, epochs + 1), val_losses, label='Val Loss')
     plt.xlabel('Épocas')
     plt.ylabel('Pérdida')
-    plt.title('Pérdida durante el Entrenamiento')
+    plt.title('Pérdida durante el Entrenamiento y Validación')
     plt.legend()
     plt.show()
+
 
 # Función para desnormalizar las predicciones
 def denormalize_predictions(predictions, means, stds, sensor_to_index):
@@ -200,46 +252,69 @@ def denormalize_predictions(predictions, means, stds, sensor_to_index):
     predictions = predictions.detach().numpy()
 
     denormalized_predictions = np.array([
-        pred * stds[sensor_to_index[sensor]] + means[sensor_to_index[sensor]]
-        for sensor, pred in zip(sensor_to_index.keys(), predictions)
+        pred * stds[idx] + means[idx]
+        for idx, pred in enumerate(predictions)
     ])
     return denormalized_predictions
 
+
 # Función de evaluación del modelo
-def evaluate_model(sensor_data, predictions, means, stds, sensor_to_index):
+def evaluate_model(sensor_data, predictions, means, stds, sensor_to_index, mask):
     # Desnormalizar las predicciones
-    denormalized_predictions = denormalize_predictions(predictions, means, stds, sensor_to_index)
+    denormalized_predictions = denormalize_predictions(predictions[mask], means, stds, sensor_to_index)
 
     # Obtener valores reales para la evaluación
     real_values = np.array([
         sensor_data[sensor_data['sensor'] == sensor]['trafficFlow'].values[-1]
-        for sensor in sensor_to_index.keys()
+        for sensor in np.array(list(sensor_to_index.keys()))[mask]
     ])
 
     # Calcular MSE y MAE
     mse = np.mean((denormalized_predictions - real_values) ** 2)
     mae = np.mean(np.abs(denormalized_predictions - real_values))
 
-    print(f"Error cuadrático medio (MSE): {mse}")
-    print(f"Error absoluto medio (MAE): {mae}")
+    print(f"Error cuadrático medio (MSE): {mse:.4f}")
+    print(f"Error absoluto medio (MAE): {mae:.4f}")
 
     return mse, mae
 
+
 # Función para guardar las predicciones en un CSV
-def save_predictions_to_csv(sensor_data, predictions, means, stds, sensor_to_index):
-    denormalized_predictions = denormalize_predictions(predictions, means, stds, sensor_to_index)
+def save_predictions_to_csv(sensor_data, predictions, means, stds, sensor_to_index, mask, filename='predictions.csv'):
+    denormalized_predictions = denormalize_predictions(predictions[mask], means, stds, sensor_to_index)
 
     # Crear un DataFrame con las predicciones
     df_predictions = pd.DataFrame({
-        'Sensor': list(sensor_to_index.keys()),
-        'PredictedTrafficFlow': denormalized_predictions.flatten()  # Asegúrate de que sea unidimensional
+        'Sensor': np.array(list(sensor_to_index.keys()))[mask],
+        'PredictedTrafficFlow': denormalized_predictions.flatten()
     })
 
     # Guardar el DataFrame en un archivo CSV
-    df_predictions.to_csv('predictions.csv', index=False)
-    print("Predicciones guardadas en 'predictions.csv'.")
+    df_predictions.to_csv(filename, index=False)
+    print(f"Predicciones guardadas en '{filename}'.")
 
-# Función principal
+
+# FEEDBACK: Función para graficar resultados reales vs predichos
+def plot_real_vs_predicted(sensor_data, predictions, means, stds, sensor_to_index, mask):
+    denormalized_predictions = denormalize_predictions(predictions[mask], means, stds, sensor_to_index)
+    sensors = np.array(list(sensor_to_index.keys()))[mask]
+    real_values = np.array([
+        sensor_data[sensor_data['sensor'] == sensor]['trafficFlow'].values[-1]
+        for sensor in sensors
+    ])
+
+    plt.figure(figsize=(15, 7))
+    plt.plot(sensors, real_values, label='Reales', marker='o')
+    plt.plot(sensors, denormalized_predictions, label='Predichas', marker='x')
+    plt.xlabel('Sensor')
+    plt.ylabel('Flujo de Tráfico')
+    plt.title('Comparación de Flujo de Tráfico Real vs Predicho')
+    plt.xticks(rotation=90)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+
 def main():
     # Extraer datos y estructura del grafo
     sensor_data = extract_sensor_data_from_allegrograph()
@@ -250,23 +325,41 @@ def main():
 
     # Definir el modelo y el optimizador con nuevos hiperparámetros
     input_dim = 1
-    hidden_dim = 16
+    hidden_dim = 16  # Mantenemos las unidades de la capa oculta
     output_dim = 1
-    model = TrafficPredictionGNN(input_dim, hidden_dim, output_dim)
+    num_gcn_layers = 3  # Añadimos múltiples capas GCN
+
+    model = TrafficPredictionGNN(input_dim, hidden_dim, output_dim, num_gcn_layers=num_gcn_layers)
 
     # Ajustar la tasa de aprendizaje
     optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
 
-    # Entrenar el modelo
-    train_model(data, model, optimizer, epochs=75)
+    # Añadir un scheduler que reduce la tasa de aprendizaje a la mitad en el epoch 50
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=50, gamma=0.5)
 
-    # Evaluar el modelo
+    # **Corregir la llamada a `train_model`** pasando también el scheduler y el optimizer
+    train_model(data, data, model, optimizer, scheduler, epochs=75)
+
+    # Evaluar el modelo en el conjunto de validación
     model.eval()
-    predictions = model(data)
-    mse, mae = evaluate_model(sensor_data, predictions, data.means, data.stds, data.sensor_to_index)
+    with torch.no_grad():
+        predictions = model(data)
 
-    # Guardar predicciones
-    save_predictions_to_csv(sensor_data, predictions, data.means, data.stds, data.sensor_to_index)
+    print("\nEvaluación en el Conjunto de Validación:")
+    mse_val, mae_val = evaluate_model(sensor_data, predictions, data.means, data.stds, data.sensor_to_index,
+                                      data.val_mask)
+
+    print("\nEvaluación en el Conjunto de Prueba:")
+    mse_test, mae_test = evaluate_model(sensor_data, predictions, data.means, data.stds, data.sensor_to_index,
+                                        data.test_mask)
+
+    # Guardar predicciones del conjunto de prueba
+    save_predictions_to_csv(sensor_data, predictions, data.means, data.stds, data.sensor_to_index, data.test_mask,
+                            filename='predictions_test.csv')
+
+    # Graficar resultados reales vs predichos para el conjunto de prueba
+    plot_real_vs_predicted(sensor_data, predictions, data.means, data.stds, data.sensor_to_index, data.test_mask)
+
 
 if __name__ == "__main__":
     main()
