@@ -208,58 +208,18 @@ Algunas funcionalidades del mapa:
 ```python
 
 # Función para extraer datos de sensores y lecturas de tráfico desde AllegroGraph
-def extract_sensor_data_from_allegrograph():
-    query = """
-    SELECT DISTINCT ?sensor ?longitude ?latitude ?trafficFlow ?windowStart
-    WHERE {
-        ?sensor a <http://www.example.com/traffic#Sensor> ;
-                <http://www.example.com/traffic#longitude> ?longitude ;
-                <http://www.example.com/traffic#latitude> ?latitude .
+# Cargar datos
+df = pd.read_csv('/predictions_test.csv')
 
-        ?entry a <http://www.example.com/traffic#TrafficEntry> ;
-                <http://www.example.com/traffic#belongsTo> ?sensor ;
-                <http://www.example.com/traffic#trafficFlow> ?trafficFlow ;
-                <http://www.example.com/traffic#windowStart> ?windowStart .
-    }
-    ORDER BY ?sensor ?windowStart
-    """
-    
-# Función para extraer la estructura del grafo de conexiones entre sensores desde AllegroGraph
-def extract_graph_structure_from_allegrograph():
-    query = """
-    SELECT DISTINCT ?source ?target
-    WHERE {
-        ?connection a <http://www.example.com/traffic#Connection> ;
-                    <http://www.example.com/traffic#source> ?source ;
-                    <http://www.example.com/traffic#target> ?target .
-    }
-    """
+# Crear el mapa centrado en las coordenadas promedio
+map_center = [df['latitude'].mean(), df['longitude'].mean()]
+mapa = folium.Map(location=map_center, zoom_start=12, tiles="openstreetmap", name='Mapa Estándar', attr="OpenStreetMap")
 
+# Preparar datos para el heatmap
+heat_data = [[row['latitude'], row['longitude'], row['predicted_trafficFlow']] for index, row in df.iterrows()]
+max_value = df['predicted_trafficFlow'].max()
+min_value = df['predicted_trafficFlow'].min()
 
-# Definición del modelo GNN + LSTM
-class TrafficPredictionGNN(torch.nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim, num_gcn_layers=3):
-        super(TrafficPredictionGNN, self).__init__()
-        self.lstm = torch.nn.LSTM(input_dim, hidden_dim, batch_first=True, num_layers=2, dropout=0.3)
-
-        # FEEDBACK: capas GCNConv secuenciales
-        self.gcn_layers = torch.nn.ModuleList()
-        self.gcn_layers.append(GCNConv(hidden_dim, hidden_dim))
-        for _ in range(num_gcn_layers - 2):
-            self.gcn_layers.append(GCNConv(hidden_dim, hidden_dim))
-        self.gcn_layers.append(GCNConv(hidden_dim, output_dim))
-
-    def forward(self, data):
-        x, _ = self.lstm(data.x)
-        if x.dim() == 3:
-            x = x[:, -1, :]  # Tomar la última salida de LSTM para cada secuencia
-        else:
-            x = x  # En caso de que x ya sea 2D, no hacer slicing
-
-        for conv in self.gcn_layers[:-1]:
-            x = F.relu(conv(x, data.edge_index))
-        x = self.gcn_layers[-1](x, data.edge_index)
-        return x
-
-
+# Agregar el heatmap al mapa con escala de colores según el nivel de tráfico
+HeatMap(heat_data, min_opacity=0.4, radius=20, max_val=max_value).add_to(mapa)
 ```
