@@ -4,7 +4,10 @@ Este TFG desarrolla un pipeline de procesamiento en tiempo real para analizar y 
 
 En este repositorio se encuentra el código de cada parte del pipeline, de momento hasta la parte de ML.
 
-Para iniciar el pipeline se ha creado un fichero (main.py) para simplemente ejecutarlo y todos los demás se ejecutarán tras de sí.
+Para usar el pipeline se ha debe:
+1. Ejecutar "main.py" para la parte de alimentar el grafo (Kafka -> Spark -> Influx / Allegro).
+2. Ejecutar "traffic_prediction_gnn.py" para entrenar el modelo y realizar predicciones.
+3. Ejecutar "heatmap.py" para actualizar los datos del mapa.
 
 ## 1. Ingesta de Datos (kafka_websocket.py)
 
@@ -126,8 +129,7 @@ Extraemos los datos necesarios del grafo de AllegroGraph y creamos un modelo que
 - LSTM (Long Short-Term Memory): captura patrones temporales en los datos
 - GCNConv: se centra en las relaciones espaciales de los sensores.
 
-Entrenamos y ajustamos el modelo y posteriormente se crea un CSV con las predicciones:
-- Futuro valor del tráfico en cada sensor teniendo en cuenta su historial de valores
+Entrenamos y ajustamos el modelo y posteriormente se crea un CSV con las predicciones y varias gráficas de rendimiento.
 
 ### Código Relevante
 
@@ -162,12 +164,18 @@ def extract_graph_structure_from_allegrograph():
     """
 
 
+# Definición del modelo GNN + LSTM
 class TrafficPredictionGNN(torch.nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim):
+    def __init__(self, input_dim, hidden_dim, output_dim, num_gcn_layers=3):
         super(TrafficPredictionGNN, self).__init__()
-        self.lstm = torch.nn.LSTM(input_dim, hidden_dim, batch_first=True, num_layers=2, dropout=0.2)  # Añadir Dropout y más capas
-        self.conv1 = GCNConv(hidden_dim, hidden_dim)
-        self.conv2 = GCNConv(hidden_dim, output_dim)
+        self.lstm = torch.nn.LSTM(input_dim, hidden_dim, batch_first=True, num_layers=2, dropout=0.3)
+
+        # FEEDBACK: capas GCNConv secuenciales
+        self.gcn_layers = torch.nn.ModuleList()
+        self.gcn_layers.append(GCNConv(hidden_dim, hidden_dim))
+        for _ in range(num_gcn_layers - 2):
+            self.gcn_layers.append(GCNConv(hidden_dim, hidden_dim))
+        self.gcn_layers.append(GCNConv(hidden_dim, output_dim))
 
     def forward(self, data):
         x, _ = self.lstm(data.x)
@@ -176,37 +184,82 @@ class TrafficPredictionGNN(torch.nn.Module):
         else:
             x = x  # En caso de que x ya sea 2D, no hacer slicing
 
-        x = F.relu(self.conv1(x, data.edge_index))
-        x = self.conv2(x, data.edge_index)
+        for conv in self.gcn_layers[:-1]:
+            x = F.relu(conv(x, data.edge_index))
+        x = self.gcn_layers[-1](x, data.edge_index)
         return x
 
+
+```
+
+## 6. Visualización de las predicciones en un mapa (heatmap.py)
+
+### Descripción
+Se utiliza el archivo CSV con las predicciones de tráfico generado por el modelo para visualizar la distribución del tráfico predicho en un mapa interactivo.
+
+Algunas funcionalidades del mapa:
+- Heatmap con un gradiente de colores que muestra la intensidad del tráfico predicho.
+- Se añade un marcador para cada sensor y poder ver su información
+- Se puede alternar entre diferentes estilos de mapas.
+- Implementa una funcionalidad de búsqueda para encontrar sensores específicos por nombre.
+
+### Código Relevante
+
+```python
+
+# Función para extraer datos de sensores y lecturas de tráfico desde AllegroGraph
+def extract_sensor_data_from_allegrograph():
+    query = """
+    SELECT DISTINCT ?sensor ?longitude ?latitude ?trafficFlow ?windowStart
+    WHERE {
+        ?sensor a <http://www.example.com/traffic#Sensor> ;
+                <http://www.example.com/traffic#longitude> ?longitude ;
+                <http://www.example.com/traffic#latitude> ?latitude .
+
+        ?entry a <http://www.example.com/traffic#TrafficEntry> ;
+                <http://www.example.com/traffic#belongsTo> ?sensor ;
+                <http://www.example.com/traffic#trafficFlow> ?trafficFlow ;
+                <http://www.example.com/traffic#windowStart> ?windowStart .
+    }
+    ORDER BY ?sensor ?windowStart
+    """
     
-# Función principal
-def main():
-    # Extraer datos y estructura del grafo
-    sensor_data = extract_sensor_data_from_allegrograph()
-    graph_edges = extract_graph_structure_from_allegrograph()
+# Función para extraer la estructura del grafo de conexiones entre sensores desde AllegroGraph
+def extract_graph_structure_from_allegrograph():
+    query = """
+    SELECT DISTINCT ?source ?target
+    WHERE {
+        ?connection a <http://www.example.com/traffic#Connection> ;
+                    <http://www.example.com/traffic#source> ?source ;
+                    <http://www.example.com/traffic#target> ?target .
+    }
+    """
 
-    # Preparar datos
-    data = prepare_data(sensor_data, graph_edges)
 
-    # Definir el modelo y el optimizador con nuevos hiperparámetros
-    input_dim = 1
-    hidden_dim = 16
-    output_dim = 1
-    model = TrafficPredictionGNN(input_dim, hidden_dim, output_dim)
+# Definición del modelo GNN + LSTM
+class TrafficPredictionGNN(torch.nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim, num_gcn_layers=3):
+        super(TrafficPredictionGNN, self).__init__()
+        self.lstm = torch.nn.LSTM(input_dim, hidden_dim, batch_first=True, num_layers=2, dropout=0.3)
 
-    # Ajustar la tasa de aprendizaje
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
+        # FEEDBACK: capas GCNConv secuenciales
+        self.gcn_layers = torch.nn.ModuleList()
+        self.gcn_layers.append(GCNConv(hidden_dim, hidden_dim))
+        for _ in range(num_gcn_layers - 2):
+            self.gcn_layers.append(GCNConv(hidden_dim, hidden_dim))
+        self.gcn_layers.append(GCNConv(hidden_dim, output_dim))
 
-    # Entrenar el modelo
-    train_model(data, model, optimizer, epochs=75)
+    def forward(self, data):
+        x, _ = self.lstm(data.x)
+        if x.dim() == 3:
+            x = x[:, -1, :]  # Tomar la última salida de LSTM para cada secuencia
+        else:
+            x = x  # En caso de que x ya sea 2D, no hacer slicing
 
-    # Evaluar el modelo
-    model.eval()
-    predictions = model(data)
-    mse, mae = evaluate_model(sensor_data, predictions, data.means, data.stds, data.sensor_to_index)
+        for conv in self.gcn_layers[:-1]:
+            x = F.relu(conv(x, data.edge_index))
+        x = self.gcn_layers[-1](x, data.edge_index)
+        return x
 
-    # Guardar predicciones
-    save_predictions_to_csv(sensor_data, predictions, data.means, data.stds, data.sensor_to_index)
+
 ```
