@@ -5,9 +5,8 @@ Este TFG desarrolla un pipeline de procesamiento en tiempo real para analizar y 
 En este repositorio se encuentra el código de cada parte del pipeline, de momento hasta la parte de ML.
 
 Para usar el pipeline se ha debe:
-1. Ejecutar "main.py" para la parte de alimentar el grafo (Kafka -> Spark -> Influx / Allegro).
-2. Ejecutar "traffic_prediction_gnn.py" para entrenar el modelo y realizar predicciones.
-3. Ejecutar "heatmap.py" para actualizar los datos del mapa.
+1. Ejecutar "data_feed_pipeline.py" para la parte de alimentar el grafo (Kafka -> Spark -> Influx / Allegro).
+2. Ejecutar "traffic_prediction_pipeline.py" para entrenar el modelo, realizar predicciones y actualizar los datos del mapa.
 
 ## 1. Ingesta de Datos (kafka_websocket.py)
 

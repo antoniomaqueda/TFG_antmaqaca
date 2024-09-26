@@ -1,14 +1,14 @@
 from influxdb_client import InfluxDBClient, Point, WritePrecision
 from influxdb_client.client.write_api import SYNCHRONOUS
 
-# Configuración de InfluxDB
+# Configuración de conexión a InfluxDB
 influx_token = "WuqcGSTVwaxrMzLA4vv2bxQvh890jd_q8rNpUU_Xh-z0McqQLViu1z4yCw7Iv_HBcgJEhqzlY3Xt9SIzal4-dg=="
 org = "US"
 url = "http://localhost:8086"
 client = InfluxDBClient(url=url, token=influx_token, org=org)
 write_api = client.write_api(write_options=SYNCHRONOUS)
 
-# Función para enviar datos a InfluxDB
+# Función para enviar datos a InfluxDB, sustituir bucket por el que se vaya a usar en la interfaz
 def write_traffic_flow_to_influxdb(df, epoch_id):
     points = []
     for row in df.collect():

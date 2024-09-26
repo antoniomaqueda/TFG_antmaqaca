@@ -10,9 +10,7 @@ print("Procesando la red de calles...")
 # Convertir la red de calles a un GeoDataFrame
 edges = ox.graph_to_gdfs(G, nodes=False)
 
-# Filtrar los campos problemáticos
 print("Filtrando los campos problemáticos...")
-# Mantener solo la geometría y las columnas que no son de tipo 'object'
 columns_to_keep = [col for col in edges.columns if edges[col].dtype != 'object']
 edges = edges[columns_to_keep]
 

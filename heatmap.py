@@ -3,22 +3,27 @@ from folium.plugins import HeatMap, MiniMap, MarkerCluster, Search
 import pandas as pd
 
 # Cargar datos
-df = pd.read_csv('/predictions_test.csv')
+df = pd.read_csv('/Users/antoniomaq/Documents/PyCharm/TFG_antmaqaca/predictions_test.csv')
 
-# Crear el mapa centrado en las coordenadas promedio
 map_center = [df['latitude'].mean(), df['longitude'].mean()]
 mapa = folium.Map(location=map_center, zoom_start=12, tiles="openstreetmap", name='Mapa Estándar', attr="OpenStreetMap")
 
-# Preparar datos para el heatmap
 heat_data = [[row['latitude'], row['longitude'], row['predicted_trafficFlow']] for index, row in df.iterrows()]
-max_value = df['predicted_trafficFlow'].max()
-min_value = df['predicted_trafficFlow'].min()
 
-# Agregar el heatmap al mapa con escala de colores según el nivel de tráfico
-HeatMap(heat_data, min_opacity=0.4, radius=20, max_val=max_value).add_to(mapa)
+HeatMap(heat_data, min_opacity=0.4, radius=20).add_to(mapa)
 
-# Crear un cluster para los marcadores
 marker_cluster = MarkerCluster().add_to(mapa)
+
+
+# Función para definir colores de los marcadores en función del tráfico
+def get_marker_color(traffic_value):
+    if traffic_value < 5.0:
+        return 'green'
+    elif 5.0 <= traffic_value < 15.0:
+        return 'orange'
+    else:
+        return 'red'
+
 
 # Agregar marcadores con popups para mostrar detalles
 for index, row in df.iterrows():
@@ -27,10 +32,13 @@ for index, row in df.iterrows():
     <b>Ubicación:</b> ({row['latitude']}, {row['longitude']})<br>
     <b>Tráfico Predicho:</b> {row['predicted_trafficFlow']}<br>
     """
+
+    marker_color = get_marker_color(row['predicted_trafficFlow'])
+
     folium.Marker(
         location=[row['latitude'], row['longitude']],
         popup=folium.Popup(popup_text, max_width=300),
-        icon=folium.Icon(color='blue', icon='info-sign')
+        icon=folium.Icon(color=marker_color, icon='info-sign')
     ).add_to(marker_cluster)
 
 # Añadir diferentes estilos de mapas con nombres personalizados
@@ -44,11 +52,14 @@ folium.LayerControl().add_to(mapa)
 minimap = MiniMap(toggle_display=True)
 mapa.add_child(minimap)
 
+df['coords'] = df.apply(lambda row: f"{row['latitude']}, {row['longitude']}", axis=1)
+
 # Crear el control de búsqueda para las coordenadas
 search = Search(
-    layer=marker_cluster,  # Puedes usar los marcadores en un cluster o directamente
-    search_label='sensor',
-    placeholder="Buscar sensor"
+    layer=marker_cluster,
+    search_label='coords',
+    placeholder="Buscar por latitud, longitud",
+    collapsed=False
 ).add_to(mapa)
 
 # Guardar y mostrar el mapa

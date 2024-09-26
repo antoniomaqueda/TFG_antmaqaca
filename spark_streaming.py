@@ -6,14 +6,12 @@ from allegrograph import ag_connect_repo, create_and_update_rdf_graph
 from influxDB import write_traffic_flow_to_influxdb
 
 def start_spark_streaming():
-    # Crear una sesión de Spark
     spark = SparkSession.builder \
         .appName("RealTimeFluxAnalysis") \
         .config("spark.jars.packages", "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1") \
         .config("spark.sql.streaming.checkpointLocation", "checkpoints") \
         .getOrCreate()
 
-    # Definir el esquema del JSON
     schemaJSON = StructType([
         StructField("x", DoubleType(), True),
         StructField("y", DoubleType(), True),
@@ -24,7 +22,6 @@ def start_spark_streaming():
         StructField("color", StringType(), True)
     ])
 
-    # Leer el flujo de datos de Kafka
     dfKafka = spark.readStream \
         .format("kafka") \
         .option("kafka.bootstrap.servers", "localhost:9092") \
@@ -32,13 +29,11 @@ def start_spark_streaming():
         .option("startingOffsets", "latest") \
         .load()
 
-    # Convertir el valor de Kafka a JSON
-    df_json = dfKafka.selectExpr("CAST(value AS STRING)")
 
-    # Aplicar el esquema al JSON
+    df_json = dfKafka.selectExpr("CAST(value AS STRING)")
     sensors_df = df_json.withColumn("data", from_json(col("value"), schemaJSON)).select("data.*")
 
-    # Renombrar las columnas
+
     sensors_df = sensors_df.withColumnRenamed("x", "longitude") \
         .withColumnRenamed("y", "latitude") \
         .withColumnRenamed("val", "value") \
@@ -46,13 +41,10 @@ def start_spark_streaming():
         .withColumnRenamed("reading", "category") \
         .withColumnRenamed("dt", "timestamp")
 
-    # Convertir el campo dt a formato de timestamp de Spark
     sensors_df = sensors_df.withColumn("timestamp", col("timestamp").cast("timestamp"))
 
-    # Filtrar las categorías de interés
+    # Filtrar y crear las categorías de interés
     filtered_df = sensors_df.filter((col("category") == "Plates In") | (col("category") == "Plates Out"))
-
-    # Crear columnas separadas para Plates In y Plates Out
     filtered_df = filtered_df.withColumn("plates_in", when(col("category") == "Plates In", col("value")).otherwise(0))
     filtered_df = filtered_df.withColumn("plates_out", when(col("category") == "Plates Out", col("value")).otherwise(0))
 
@@ -62,7 +54,6 @@ def start_spark_streaming():
         .agg(sum("plates_in").alias("total_plates_in"), sum("plates_out").alias("total_plates_out")) \
         .withColumn("traffic_flow", col("total_plates_in") - col("total_plates_out"))
 
-    # Seleccionar solo las columnas esenciales
     essential_df = traffic_flow_df.select("window", "longitude", "latitude", "traffic_flow")
 
     # Cargar la Red de Calles desde el Archivo Guardado

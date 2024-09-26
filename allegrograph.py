@@ -23,7 +23,6 @@ def check_and_update_sensor(conn, sensor_uri, longitude, latitude, traffic_flow,
 
     print(f"Creating new traffic entry for sensor {sensor_uri} at {window_start}")
 
-    # Añadir la entrada histórica
     g.add((traffic_entry_uri, RDF.type, ex.TrafficEntry))
     g.add((traffic_entry_uri, ex.belongsTo, sensor_uri))
     g.add((traffic_entry_uri, ex.trafficFlow, Literal(traffic_flow, datatype=XSD.float)))
@@ -53,7 +52,6 @@ def check_and_update_sensor(conn, sensor_uri, longitude, latitude, traffic_flow,
 def create_connections_by_streets(conn, sensors, edges, threshold_distance=100):
     ex = Namespace("http://www.example.com/traffic#")
 
-    # Crear un índice espacial para los sensores
     sensor_idx = index.Index()
     for i, sensor in enumerate(sensors):
         sensor_idx.insert(i, sensor["geometry"].bounds)
@@ -78,6 +76,7 @@ def create_connections_by_streets(conn, sensors, edges, threshold_distance=100):
                     create_edge(conn, sensor1, sensor2, ex)
                     seen_connections[(sensor1['uri'], sensor2['uri'])] = True
 
+# Crear conexioens según el dataset en GeoJSON
 def create_edge(conn, sensor1, sensor2, ex):
     g = Graph()
     sensor1_uri = sensor1["uri"]
@@ -101,6 +100,7 @@ def ensure_all_sensors_connected(conn, sensors, ex):
                 create_edge(conn, sensor, nearest_sensor, ex)
                 seen_connections[(sensor['uri'], nearest_sensor['uri'])] = True
 
+# Si no hay alguno suficientemente cerca según el dataset, coger el más cercano para que todos los nodos siempre estén conectados
 def find_nearest_sensor(sensor, sensors, threshold_distance=100):
     nearest_sensor = None
     min_distance = float('inf')
@@ -133,10 +133,8 @@ def create_and_update_rdf_graph(df, conn, edges):
         })
         check_and_update_sensor(conn, sensor_uri, row['longitude'], row['latitude'], row['traffic_flow'], row['window'].start, row['window'].end)
 
-    # Crear conexiones entre sensores basadas en la proximidad a las calles
     create_connections_by_streets(conn, sensors, edges)
 
-    # Asegurarse de que todos los sensores estén conectados al más cercano
     ensure_all_sensors_connected(conn, sensors, ex)
 
     print("Batch processed and data added to AllegroGraph.")
