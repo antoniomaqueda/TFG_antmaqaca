@@ -1,4 +1,4 @@
-# Trabajo de Fin de Grado: Análisis de datos en streaming para IoT
+# Trabajo de Fin de Grado: Predicción del Tráfico en Tiempo Real con IoT y Redes Neuronales en Grafos
 
 Este TFG desarrolla un pipeline de procesamiento en tiempo real para analizar y predecir el flujo de tráfico urbano utilizando datos de sensores, integrando tecnologías como Kafka, Spark Streaming, AllegroGraph, PyTorch Geometric y InfluxDB.
 
