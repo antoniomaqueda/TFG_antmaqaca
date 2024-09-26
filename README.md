@@ -121,7 +121,7 @@ def create_and_update_rdf_graph(df, conn, edges):
     print("Batch processed and data added to AllegroGraph.")
 ```
 
-## 5. Definición y uso del modelo Machine Learning (traffic_prediction_gnn.py)
+## 5. Definición y uso del modelo Machine Learning (traffic_prediction_pipeline.py)
 
 ### Descripción
 Extraemos los datos necesarios del grafo de AllegroGraph y creamos un modelo que combina:
